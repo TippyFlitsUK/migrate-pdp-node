@@ -35,6 +35,9 @@ Thumbs.db
 *.swo
 *~
 
+# Claude Code context
+.claude/context.md
+
 # Test coverage
 coverage/
 .nyc_output/

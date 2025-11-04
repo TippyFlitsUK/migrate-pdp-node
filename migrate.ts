@@ -95,6 +95,7 @@ async function main() {
   console.log('Creating storage context...')
   const context = await synapse.storage.createContext({
     providerId: CONFIG.providerId,
+    uploadBatchSize: 14, // Prevent ExtraDataTooLarge error (8KB blockchain limit)
     metadata: {
       migrationDate: new Date().toISOString(),
       source: CONFIG.sourcePath,
@@ -156,12 +157,15 @@ async function main() {
           const filePath = join(CONFIG.sourcePath, file)
           const data = await readFile(filePath)
 
-          await context.upload(data, {
+          const result = await context.upload(data, {
             metadata: {
               originalFilename: file,
               originalPath: filePath,
             },
           })
+
+          // Log CID for verification
+          console.log(`✓ ${file} -> CID: ${result.pieceCid}`)
 
           stats.completed++
           progress.migratedFiles.add(file)

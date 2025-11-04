@@ -12,8 +12,8 @@ const CONFIG = {
   privateKey: process.env.PRIVATE_KEY as Hex,
   rpcUrl: process.env.RPC_URL || RPC_URLS.calibration.http,
   providerId: parseInt(process.env.PROVIDER_ID || '0'),
-  testFile: '/filecoin-storage/piece/s-t00-16201',
-  expectedCid: 'baga6ea4seaqpss756prtkiynrewq4fqfaornk3zux2hldv4xduchtxz63s2osbq',
+  testFile: '/filecoin-storage/piece/s-t00-29501',
+  expectedCid: 'baga6ea4seaqlwjgpgisklk2lalysxfiuahzll65xxoqxapyxgup4gocduk7r4pi',
 }
 
 async function main() {
