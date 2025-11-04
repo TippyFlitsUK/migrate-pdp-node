@@ -1,0 +1,25 @@
+{
+  "name": "migrate-pdp-node",
+  "version": "1.0.0",
+  "description": "Migration tool for Filecoin PDP pieces to new node with GA contracts",
+  "type": "module",
+  "scripts": {
+    "migrate": "tsx migrate.ts",
+    "dev": "tsx migrate.ts",
+    "balance": "tsx check-balance.ts",
+    "deposit": "tsx deposit.ts",
+    "approve": "tsx approve-operator.ts",
+    "test": "tsx test-single-piece.ts"
+  },
+  "dependencies": {
+    "@filoz/synapse-sdk": "latest",
+    "p-limit": "^5.0.0",
+    "viem": "^2.38.3",
+    "multiformats": "^13.4.1"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
