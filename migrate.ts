@@ -11,13 +11,54 @@ import { join } from 'path'
 import pLimit from 'p-limit'
 import type { Hex } from 'viem'
 
+// Detect local Lotus RPC endpoint
+async function detectRpcEndpoint(): Promise<{ url: string; isLocal: boolean }> {
+  const localIp = process.env.LOCAL_LOTUS_IP
+
+  if (localIp) {
+    const localRpcUrl = `http://${localIp}:1234/rpc/v1`
+
+    try {
+      const response = await fetch(localRpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'Filecoin.Version',
+          params: [],
+          id: 1,
+        }),
+        signal: AbortSignal.timeout(3000),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        if (data.result?.Version) {
+          console.log(`✓ Local Lotus node detected at ${localIp} (${data.result.Version})`)
+          return { url: localRpcUrl, isLocal: true }
+        }
+      }
+    } catch (error) {
+      console.log(
+        `⚠ LOCAL_LOTUS_IP set but node at ${localIp}:1234 not reachable, using public endpoint`
+      )
+    }
+  }
+
+  return { url: RPC_URLS.calibration.http, isLocal: false }
+}
+
+// Detect RPC endpoint and set appropriate defaults
+const rpcConfig = await detectRpcEndpoint()
+const defaultConcurrency = rpcConfig.isLocal ? '20' : '10'
+
 // Configuration from environment
 const CONFIG = {
   privateKey: process.env.PRIVATE_KEY as Hex,
-  rpcUrl: process.env.RPC_URL || RPC_URLS.calibration.http,
+  rpcUrl: process.env.RPC_URL || rpcConfig.url,
   providerId: parseInt(process.env.PROVIDER_ID || '0'),
   sourcePath: process.env.SOURCE_PATH || '/filecoin-storage/piece',
-  concurrency: parseInt(process.env.CONCURRENCY || '20'),
+  concurrency: parseInt(process.env.CONCURRENCY || defaultConcurrency),
   logInterval: parseInt(process.env.LOG_INTERVAL || '50'),
   progressFile: 'migration-progress.json',
   batchSize: parseInt(process.env.BATCH_SIZE || '100'),
@@ -76,11 +117,50 @@ async function main() {
     throw new Error('PROVIDER_ID environment variable is required')
   }
 
+  // Load progress from previous run
+  console.log('Loading migration progress...')
+  const progress = await loadProgress()
+
+  if (progress.migratedCount > 0) {
+    console.log(`✓ Found existing progress: ${progress.migratedCount} files already migrated`)
+    stats.skipped = progress.migratedCount
+  } else {
+    console.log('✓ Starting fresh migration')
+  }
+  console.log('')
+
+  // Setup graceful shutdown on Ctrl+C
+  let isShuttingDown = false
+  const handleShutdown = async () => {
+    if (isShuttingDown) {
+      console.log('\n\n⚠️  Force killing... progress may not be saved!')
+      process.exit(1)
+    }
+    isShuttingDown = true
+    console.log('\n\n⚠️  Shutting down gracefully... (press Ctrl+C again to force quit)')
+    console.log('⏳ Saving current progress...')
+    await saveProgress(progress)
+    console.log('✓ Progress saved. Safe to exit.')
+    process.exit(0)
+  }
+
+  process.on('SIGINT', handleShutdown)
+  process.on('SIGTERM', handleShutdown)
+
   console.log('Configuration:')
   console.log(`  Source: ${CONFIG.sourcePath}`)
   console.log(`  RPC URL: ${CONFIG.rpcUrl}`)
   console.log(`  Provider ID: ${CONFIG.providerId}`)
   console.log(`  Concurrency: ${CONFIG.concurrency}`)
+
+  // Show RPC connection status
+  if (process.env.LOCAL_LOTUS_IP && CONFIG.rpcUrl.includes(process.env.LOCAL_LOTUS_IP)) {
+    console.log(`  ✓ Using local Lotus node at ${process.env.LOCAL_LOTUS_IP}`)
+  } else if (process.env.LOCAL_LOTUS_IP) {
+    console.log(`  ⚠ Local node at ${process.env.LOCAL_LOTUS_IP} not reachable, using public RPC`)
+  } else {
+    console.log(`  ℹ Using public RPC endpoint (set LOCAL_LOTUS_IP for faster local node)`)
+  }
   console.log('')
 
   // Initialize Synapse SDK
@@ -102,18 +182,6 @@ async function main() {
     },
   })
   console.log('✓ Storage context created\n')
-
-  // Load progress from previous run
-  console.log('Loading migration progress...')
-  const progress = await loadProgress()
-
-  if (progress.migratedCount > 0) {
-    console.log(`✓ Found existing progress: ${progress.migratedCount} files already migrated`)
-    stats.skipped = progress.migratedCount
-  } else {
-    console.log('✓ Starting fresh migration')
-  }
-  console.log('')
 
   // Get all piece files
   console.log('Scanning piece files...')
@@ -178,8 +246,38 @@ async function main() {
 
           return { success: true, file }
         } catch (error) {
-          stats.failed++
           const errorMessage = error instanceof Error ? error.message : String(error)
+
+          // Check if piece is already migrated (duplicate or empty batch)
+          if (
+            errorMessage.includes('duplicate subPieceCid') ||
+            errorMessage.includes('Must add at least one piece')
+          ) {
+            const reason = errorMessage.includes('duplicate subPieceCid')
+              ? 'duplicate subPieceCid'
+              : 'empty batch (all duplicates)'
+            console.log(`✓ ${file} -> Already migrated (${reason})`)
+            stats.completed++
+            progress.migratedFiles.add(file)
+            progress.migratedCount++
+            return { success: true, file, duplicate: true }
+          }
+
+          // Check if file exceeds SDK size limit (permanent skip)
+          if (errorMessage.includes('exceeds maximum allowed size')) {
+            console.log(`⚠ ${file} -> Skipped (exceeds SDK 200 MiB limit)`)
+            progress.migratedFiles.add(file) // Mark as "handled" so it doesn't retry
+            stats.failed++
+            stats.errors.push({
+              file,
+              error: 'FILE_TOO_LARGE: ' + errorMessage,
+              timestamp: new Date().toISOString(),
+            })
+            return { success: false, file, error: errorMessage, tooLarge: true }
+          }
+
+          // Actual failure
+          stats.failed++
           stats.errors.push({
             file,
             error: errorMessage,
