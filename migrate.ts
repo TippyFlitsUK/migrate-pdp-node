@@ -9,6 +9,7 @@ import { readdir, readFile, writeFile } from 'fs/promises'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import pLimit from 'p-limit'
+import * as readline from 'readline'
 import type { Hex } from 'viem'
 
 // Detect local Lotus RPC endpoint
@@ -46,6 +47,34 @@ async function detectRpcEndpoint(): Promise<{ url: string; isLocal: boolean }> {
   }
 
   return { url: RPC_URLS.calibration.http, isLocal: false }
+}
+
+// Prompt user for dataset ID
+async function promptForDatasetId(): Promise<number | null> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+
+  return new Promise((resolve) => {
+    rl.question(
+      'Enter dataset ID to resume (or press Enter for new dataset): ',
+      (answer) => {
+        rl.close()
+        const trimmed = answer.trim()
+        if (trimmed === '') {
+          resolve(null) // Create new dataset
+        } else {
+          const datasetId = parseInt(trimmed, 10)
+          if (isNaN(datasetId) || datasetId <= 0) {
+            console.error('Invalid dataset ID. Must be a positive number.')
+            process.exit(1)
+          }
+          resolve(datasetId)
+        }
+      }
+    )
+  })
 }
 
 // Detect RPC endpoint and set appropriate defaults
@@ -163,6 +192,14 @@ async function main() {
   }
   console.log('')
 
+  // Prompt for dataset ID
+  const datasetId = await promptForDatasetId()
+  if (datasetId) {
+    console.log(`✓ Using existing dataset #${datasetId}\n`)
+  } else {
+    console.log('✓ Creating new dataset\n')
+  }
+
   // Initialize Synapse SDK
   console.log('Initializing Synapse SDK...')
   const synapse = await Synapse.create({
@@ -173,14 +210,21 @@ async function main() {
 
   // Create storage context (single dataset for all pieces)
   console.log('Creating storage context...')
-  const context = await synapse.storage.createContext({
+  const contextOptions: any = {
     providerId: CONFIG.providerId,
     uploadBatchSize: 14, // Prevent ExtraDataTooLarge error (8KB blockchain limit)
     metadata: {
-      migrationDate: new Date().toISOString(),
       source: CONFIG.sourcePath,
+      purpose: 'pdp-migration',
     },
-  })
+  }
+
+  // If user provided a dataset ID, use it
+  if (datasetId) {
+    contextOptions.dataSetId = datasetId
+  }
+
+  const context = await synapse.storage.createContext(contextOptions)
   console.log('✓ Storage context created\n')
 
   // Get all piece files
